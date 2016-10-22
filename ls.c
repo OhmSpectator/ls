@@ -13,7 +13,7 @@ static char* append_linked_name(const struct dirent* entry)
     int buffer_size = 1;
     char* buffer = NULL;
     int symbols_read;
-    while(true) {
+    while(1) {
         buffer = realloc(buffer, buffer_size);
         symbols_read = readlink(entry->d_name, buffer, buffer_size);
         if(symbols_read < 0) {
@@ -24,7 +24,7 @@ static char* append_linked_name(const struct dirent* entry)
             buffer[symbols_read] = 0;
             break;
         }
-        //sumbols_read == buffer_size. Not sure, the whole name is here.
+        //symbols_read == buffer_size. Not sure, the whole name is here.
         buffer_size *= 2;
     }
     int full_name_size = strlen(entry->d_name) + strlen(SYMLINK_SPACER_STR) + symbols_read + 1;
