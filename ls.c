@@ -77,7 +77,7 @@ static char* get_name_str(const struct dirent* entry)
     return name_str;
 }
 
-static char get_type_char(struct stat* entry_stat)
+static char get_type_char(const struct stat* entry_stat)
 {
     mode_t entry_mode = entry_stat->st_mode;
     int entry_type = entry_mode & S_IFMT;
@@ -202,15 +202,13 @@ static char* get_modify_time_str(time_t* time)
 
 static void print_entry(const struct dirent* entry)
 {
-
-    /* Parts of format string */
     char* full_name_str = NULL;
     char* permission_str = NULL;
     nlink_t hardlink_number = 0;
     char* owner_str = NULL;
     char* group_str = NULL;
     off_t bytes = 0;
-    char* modify_time_str = NULL; //stat->st_mtime
+    char* modify_time_str = NULL;
 
     struct stat entry_stat;
     int stat_result;
