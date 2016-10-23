@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <grp.h>
 #include <pwd.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,59 +10,74 @@
 #include <time.h>
 #include <unistd.h>
 
-#define SYMLINK_SPACER_STR " -> "
+#define SYMLINK_SPACER_STR      " -> "
+#define TIME_ERROR_STR          "<broken time>"
+#define PERMISSIONS_DEFAULT_STR "---------"
 
-static char* append_linked_name(const struct dirent* entry)
+#define CTIME_BUFFER_SIZE 26
+
+
+static void append_linked_name(const struct dirent* entry, char** name)
 {
-    int buffer_size = 1;
+    size_t buffer_size = 1;
     char* buffer = NULL;
-    int symbols_read;
+    ssize_t symbols_read;
+
+    //Read linked entry name
     while(1) {
         buffer = realloc(buffer, buffer_size);
         symbols_read = readlink(entry->d_name, buffer, buffer_size);
         if(symbols_read < 0) {
             free(buffer);
-            return NULL;
+            return;
         }
         if(symbols_read < buffer_size) {
             buffer[symbols_read] = 0;
             break;
         }
-        //symbols_read == buffer_size. Not sure, the whole name is here.
+        //symbols_read == buffer_size. Not sure, the whole name is here, retry
         buffer_size *= 2;
     }
-    int full_name_size = strlen(entry->d_name) + strlen(SYMLINK_SPACER_STR) + symbols_read + 1;
+
+    size_t full_name_size = strlen(*name) + strlen(SYMLINK_SPACER_STR) + symbols_read + 1;
     char* result = (char*)malloc(full_name_size);
+    if(result == NULL)
+        goto cleanup;
+
     memset(result, 0, full_name_size);
     strcat(result, entry->d_name);
     strcat(result, SYMLINK_SPACER_STR);
     strcat(result, buffer);
+    free(*name);
+    *name = result;
+
+cleanup:
     free(buffer);
-    return result;
+
+    return;
 }
 
-static char* get_entry_name_str(const struct dirent* entry)
+static char* get_name_str(const struct dirent* entry)
 {
+    char* name_str = NULL;
 
-    char* full_name = NULL;
+    name_str = strdup(entry->d_name);
+    if(name_str == NULL)
+        return name_str;
 
-    int stat_result;
     struct stat entry_stat;
+    int stat_result;
     stat_result = lstat(entry->d_name, &entry_stat);
+    if(stat_result < 0)
+        return name_str;
 
-    int symlink = S_ISLNK(entry_stat.st_mode);
+    if(S_ISLNK(entry_stat.st_mode))
+        append_linked_name(entry, &name_str);
 
-    if(symlink) {
-        full_name = append_linked_name(entry);
-    } else {
-        full_name = (char*)malloc(strlen(entry->d_name) + 1);
-        //TODO check malloc result
-        strcpy(full_name, entry->d_name);;
-    }
-    return full_name;
+    return name_str;
 }
 
-static char get_entry_type_symb(struct stat* entry_stat)
+static char get_type_char(struct stat* entry_stat)
 {
     mode_t entry_mode = entry_stat->st_mode;
     int entry_type = entry_mode & S_IFMT;
@@ -85,102 +101,102 @@ static char get_entry_type_symb(struct stat* entry_stat)
     };
 }
 
-static char* get_permission_str(const struct stat* entry_stat)
+static char* get_permissions_str(mode_t mode)
 {
-    char* permission_str = (char*)malloc(9 + 1);
-    memset(permission_str, '-', 9);
-    permission_str[9] = 0;
-
-    int mode = entry_stat->st_mode;
+    char* permissions_str;
+    permissions_str = strdup(PERMISSIONS_DEFAULT_STR);
+    if(permissions_str == NULL)
+        return NULL;
 
     if(mode & S_IRUSR)
-        permission_str[0] = 'r';
+        permissions_str[0] = 'r';
     if(mode & S_IWUSR)
-        permission_str[1] = 'w';
+        permissions_str[1] = 'w';
     if(mode & S_IXUSR)
-        permission_str[2] = 'x';
+        permissions_str[2] = 'x';
 
     if(mode & S_IRGRP)
-        permission_str[3] = 'r';
+        permissions_str[3] = 'r';
     if(mode & S_IWGRP)
-        permission_str[4] = 'w';
+        permissions_str[4] = 'w';
     if(mode & S_IXGRP)
-        permission_str[5] = 'x';
+        permissions_str[5] = 'x';
 
     if(mode & S_IROTH)
-        permission_str[6] = 'r';
+        permissions_str[6] = 'r';
     if(mode & S_IWOTH)
-        permission_str[7] = 'w';
+        permissions_str[7] = 'w';
     if(mode & S_IXOTH) {
         if(mode & S_ISVTX)
-            permission_str[8] = 't';
+            permissions_str[8] = 't';
         else
-            permission_str[8] = 'x';
+            permissions_str[8] = 'x';
     } else {
         if(mode & S_ISVTX)
-            permission_str[8] = 'T';
+            permissions_str[8] = 'T';
     }
 
-    return permission_str;
+    return permissions_str;
 }
 
-static char* get_owner_str(const struct stat* entry_stat)
+static char* get_owner_str(uid_t uid)
 {
     char* owner_str = NULL;
 
-    uid_t uid = entry_stat->st_uid;
-
     struct passwd* user_info = NULL;
+    errno = 0;
     user_info = getpwuid (uid);
-    
+    if(errno != 0)
+        return NULL;
+
     if(user_info == NULL) {
-        char tmp[32];
-        sprintf(tmp, "%u", uid);
-        size_t len = strlen(tmp);
-        owner_str = (char*)malloc(len + 1);
-        strcpy(owner_str, tmp);
+        size_t len = snprintf(NULL,0, "%ju", (uintmax_t)uid) + 1; //+1 is for '\0'
+        owner_str = (char*)malloc(len);
+        if(owner_str != NULL)
+            sprintf(owner_str, "%ju", (uintmax_t)uid);
     } else {
-        size_t len = strlen(user_info->pw_name);
-        owner_str = (char*)malloc(len + 1);
-        strcpy(owner_str, user_info->pw_name);
+        owner_str = strdup(user_info->pw_name);
     }
 
     return owner_str;
 }
 
-static char* get_group_str(const struct stat* entry_stat)
+static char* get_group_str(gid_t gid)
 {
     char* group_str = NULL;
 
-    gid_t gid = entry_stat->st_gid;
-
     struct group* group_info = NULL;
+    errno = 0;
     group_info = getgrgid (gid);
-    
+    if(errno != 0)
+        return NULL;
+
     if(group_info == NULL) {
-        char tmp[32];
-        sprintf(tmp, "%u", gid);
-        size_t len = strlen(tmp);
-        group_str = (char*)malloc(len + 1);
-        strcpy(group_str, tmp);
+        size_t len = snprintf(NULL,0, "%ju", (uintmax_t)gid) + 1; //+1 is for '\0'
+        group_str = (char*)malloc(len);
+        if(group_str != NULL)
+            sprintf(group_str, "%ju", (uintmax_t)gid);
     } else {
-        size_t len = strlen(group_info->gr_name);
-        group_str = (char*)malloc(len + 1);
-        strcpy(group_str, group_info->gr_name);
+        group_str = strdup(group_info->gr_name);
     }
 
     return group_str;
 }
 
-static char* get_modify_time_str(const struct stat* entry_stat)
+static char* get_modify_time_str(time_t* time)
 {
     char* time_str = NULL;
-    char tmp[100];
-    ctime_r(&entry_stat->st_mtime, tmp);
-    size_t len = strlen(tmp);
-    time_str = (char*)malloc(len);
-    strncpy(time_str, tmp, len-1);
-    time_str[len-1] = 0;
+    char ctime_buffer[CTIME_BUFFER_SIZE];
+
+    char* ctime_result;
+    ctime_result = ctime_r(time, ctime_buffer);
+    if(ctime_result < 0) {
+        time_str = strdup(TIME_ERROR_STR);
+    } else {
+        size_t len = strlen(ctime_buffer) - 1; //Do not need '\n' at the end
+        time_str = strndup(ctime_buffer, len);
+    }
+
     return time_str;
 }
 
@@ -204,37 +220,43 @@ static void print_entry(const struct dirent* entry)
         goto cleanup;
     }
 
-    char type_symb = get_entry_type_symb(&entry_stat);
-    //TODO check for '?' type
-    
-    if(S_ISLNK(entry_stat.st_mode))
+    char type_char = get_type_char(&entry_stat);
+
+    if(S_ISLNK(entry_stat.st_mode)) {
         stat_result = stat(entry->d_name, &entry_stat);
+        if(stat_result < 0) {
+            printf("Failed to get stat for %s: %s\n", entry->d_name, strerror(errno));
+            goto cleanup;
+        }
+    }
 
-    full_name_str = get_entry_name_str(entry);
-    //TODO error handling
+    full_name_str = get_name_str(entry);
+    if(full_name_str == NULL)
+        goto cleanup;
 
-    permission_str = get_permission_str(&entry_stat);
-    //TODO error handling
+    permission_str = get_permissions_str(entry_stat.st_mode);
+    if(permission_str == NULL)
+        goto cleanup;
 
     hardlink_number = entry_stat.st_nlink;
 
-    owner_str = get_owner_str(&entry_stat);
-    //TODO error handling
+    owner_str = get_owner_str(entry_stat.st_uid);
+    if(owner_str == NULL)
+        goto cleanup;
 
-    group_str = get_group_str(&entry_stat);
-    //TODO error handling
+    group_str = get_group_str(entry_stat.st_gid);
+    if(group_str == NULL)
+        goto cleanup;
 
     bytes = entry_stat.st_size;
 
-    modify_time_str = get_modify_time_str(&entry_stat);
-    //TODO error handling
+    modify_time_str = get_modify_time_str(&entry_stat.st_mtime);
+    if(modify_time_str == NULL)
+        goto cleanup;
 
-    printf("%c%s %lu %s %s %zd %s %s\n", type_symb,
-               permission_str,
-               hardlink_number, owner_str, group_str,
-               bytes,
-               modify_time_str, full_name_str
-           );
+    printf("%c%s %ju %s %s %zd %s %s\n",
+           type_char, permission_str, (uintmax_t)hardlink_number,
+           owner_str, group_str, bytes, modify_time_str, full_name_str);
 
 cleanup:
     if(modify_time_str != NULL)
@@ -272,7 +294,6 @@ int main(int argc, char* argv[])
         result = EXIT_FAILURE;
         goto cleanup;
     }
-    //XXX implement with scandir64 for LFS
     entries_num = scandir(dir, &entries, not_a_dot, alphasort);
     if(entries_num >= 0) {
         for(int i = 0; i < entries_num; i++) {
@@ -284,6 +305,7 @@ int main(int argc, char* argv[])
         result = EXIT_FAILURE;
         goto cleanup;
     }
+
 cleanup:
     if(entries != NULL)
         free(entries);
