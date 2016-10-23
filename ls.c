@@ -1,9 +1,12 @@
 #include <dirent.h>
 #include <errno.h>
+#include <grp.h>
+#include <pwd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #define SYMLINK_SPACER_STR " -> "
@@ -121,39 +124,131 @@ static char* get_permission_str(const struct stat* entry_stat)
     return permission_str;
 }
 
+static char* get_owner_str(const struct stat* entry_stat)
+{
+    char* owner_str = NULL;
+
+    uid_t uid = entry_stat->st_uid;
+
+    struct passwd* user_info = NULL;
+    user_info = getpwuid (uid);
+    
+    if(user_info == NULL) {
+        char tmp[32];
+        sprintf(tmp, "%u", uid);
+        size_t len = strlen(tmp);
+        owner_str = (char*)malloc(len + 1);
+        strcpy(owner_str, tmp);
+    } else {
+        size_t len = strlen(user_info->pw_name);
+        owner_str = (char*)malloc(len + 1);
+        strcpy(owner_str, user_info->pw_name);
+    }
+
+    return owner_str;
+}
+
+static char* get_group_str(const struct stat* entry_stat)
+{
+    char* group_str = NULL;
+
+    gid_t gid = entry_stat->st_gid;
+
+    struct group* group_info = NULL;
+    group_info = getgrgid (gid);
+    
+    if(group_info == NULL) {
+        char tmp[32];
+        sprintf(tmp, "%u", gid);
+        size_t len = strlen(tmp);
+        group_str = (char*)malloc(len + 1);
+        strcpy(group_str, tmp);
+    } else {
+        size_t len = strlen(group_info->gr_name);
+        group_str = (char*)malloc(len + 1);
+        strcpy(group_str, group_info->gr_name);
+    }
+
+    return group_str;
+}
+
+static char* get_modify_time_str(const struct stat* entry_stat)
+{
+    char* time_str = NULL;
+    char tmp[100];
+    ctime_r(&entry_stat->st_mtime, tmp);
+    size_t len = strlen(tmp);
+    time_str = (char*)malloc(len);
+    strncpy(time_str, tmp, len-1);
+    time_str[len-1] = 0;
+    return time_str;
+}
+
 static void print_entry(const struct dirent* entry)
 {
-    unsigned int hardlink_count = 241; //stat->st_nlink
-    char* owner = "some_owner"; //stat->st_uid
-    char* group = "some_group"; //stat->st_gid
-    size_t bytes = 241; //stat->st_size
-    const char* last_modify_date = "some_date"; //stat->st_mtime
-    unsigned int major = 0, minor = 0;
+
+    /* Parts of format string */
+    char* full_name_str = NULL;
+    char* permission_str = NULL;
+    nlink_t hardlink_number = 0;
+    char* owner_str = NULL;
+    char* group_str = NULL;
+    off_t bytes = 0;
+    char* modify_time_str = NULL; //stat->st_mtime
 
     struct stat entry_stat;
     int stat_result;
     stat_result = lstat(entry->d_name, &entry_stat);
-    //TODO error handling
+    if(stat_result < 0) {
+        printf("Failed to get stat for %s: %s\n", entry->d_name, strerror(errno));
+        goto cleanup;
+    }
 
     char type_symb = get_entry_type_symb(&entry_stat);
     //TODO check for '?' type
+    
+    if(S_ISLNK(entry_stat.st_mode))
+        stat_result = stat(entry->d_name, &entry_stat);
 
-    char* full_name_str = get_entry_name_str(entry);
+    full_name_str = get_entry_name_str(entry);
     //TODO error handling
 
-    char* permission_str = get_permission_str(&entry_stat);
+    permission_str = get_permission_str(&entry_stat);
     //TODO error handling
 
+    hardlink_number = entry_stat.st_nlink;
 
-    printf("%c%s %u %s %s %zd %s %s\n", type_symb,
+    owner_str = get_owner_str(&entry_stat);
+    //TODO error handling
+
+    group_str = get_group_str(&entry_stat);
+    //TODO error handling
+
+    bytes = entry_stat.st_size;
+
+    modify_time_str = get_modify_time_str(&entry_stat);
+    //TODO error handling
+
+    printf("%c%s %lu %s %s %zd %s %s\n", type_symb,
                permission_str,
-               hardlink_count, owner, group,
+               hardlink_number, owner_str, group_str,
                bytes,
-               last_modify_date, full_name_str
+               modify_time_str, full_name_str
            );
 
-    free(full_name_str);
-    free(permission_str);
+cleanup:
+    if(modify_time_str != NULL)
+        free(modify_time_str);
+    if(group_str != NULL)
+        free(group_str);
+    if(owner_str != NULL)
+        free(owner_str);
+    if(permission_str != NULL)
+        free(permission_str);
+    if(full_name_str != NULL)
+        free(full_name_str);
+
+    return;
 }
 
 static int not_a_dot(const struct dirent* entry)
@@ -164,21 +259,33 @@ static int not_a_dot(const struct dirent* entry)
         return 1;
 }
 
-int main(void)
+int main(int argc, char* argv[])
 {
-    struct dirent** entries;
+    int result = EXIT_SUCCESS;
+    struct dirent** entries = NULL;
     int entries_num;
+    const char* dir = argc > 1 ? argv[1] : "./";
+    int chdir_result;
+    chdir_result = chdir(dir);
+    if(chdir_result < 0) {
+        printf("Failed to chdir to %s: %s\n", dir, strerror(errno));
+        result = EXIT_FAILURE;
+        goto cleanup;
+    }
     //XXX implement with scandir64 for LFS
-    entries_num = scandir("./", &entries, not_a_dot, alphasort);
+    entries_num = scandir(dir, &entries, not_a_dot, alphasort);
     if(entries_num >= 0) {
         for(int i = 0; i < entries_num; i++) {
             print_entry(entries[i]);
             free(entries[i]);
         }
     } else {
-        printf("Failed to scan directory: %s\n", strerror(errno));
-        return -1;
+        printf("Failed to scan %s: %s\n", dir, strerror(errno));
+        result = EXIT_FAILURE;
+        goto cleanup;
     }
-    free(entries);
-    return 0;
+cleanup:
+    if(entries != NULL)
+        free(entries);
+    return result;
 }
